@@ -6,5 +6,5 @@ python main.py \
     --aws-cloudwatch-group LOGGROUP \
     --aws-cloudwatch-stream LOG_STREAM \
     --docker-image python \
-    --bash-command "python -c \"print('Hello, World!')""
+    --bash-command "python -c \"print('Hello, World!')\""
 ```
