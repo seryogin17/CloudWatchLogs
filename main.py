@@ -14,8 +14,6 @@ LOGGER_FORMAT = "%(levelname)-8s | %(message)s"
 logger = logging.getLogger()
 SIZE_PADDING = 26
 LOG_MESSAGE_MAX_SIZE = 262144
-MAX_BATCH_SIZE = 1048576
-LOG_EVENTS_BATCH_MAX_LEN = 10000
 
 LIMIT_FOR_LOG_FROM_PAST_IN_DAYS = 14
 LIMIT_FOR_LOG_FROM_FUTURE_IN_DAYS = 2
@@ -66,17 +64,8 @@ def get_log_events(aws_cloudwatch_client, aws_cloudwatch_group, aws_cloudwatch_s
     return log_events
 
 
-def timestamp_fits_timespan(batch, log_timestamp):
-    return (len(batch) == 0) or (timedelta(milliseconds=batch[0]["timestamp"]-log_timestamp) < timedelta(hours=24))
-
-
-def log_fits_batch(batch, message_size, batch_size):
-    return (len(batch) < LOG_EVENTS_BATCH_MAX_LEN) and (message_size + batch_size <= MAX_BATCH_SIZE)
-
-
-def validate_timestamp(log_iso_timestamp, retention_period):
+def validate_timestamp(log_iso_timestamp, current_unix_timestamp, retention_period):
     log_unix_timestamp = parser.parse(log_iso_timestamp).timestamp()
-    current_unix_timestamp = datetime.now().timestamp()
     if retention_period:
         min_past_limit = min(LIMIT_FOR_LOG_FROM_PAST_IN_DAYS, retention_period)
     else:
@@ -91,41 +80,26 @@ def validate_timestamp(log_iso_timestamp, retention_period):
                        f"resetting it to current time '{datetime.fromtimestamp(current_unix_timestamp)}'...")
         return round(current_unix_timestamp * 1000)
 
-    return round(log_unix_timestamp * 1000)
-
-
-def get_batch_of_log_events(docker_logs, retention_period):
-    batch = []
-    batch_size = 0
-
-    for docker_log in docker_logs:
-        log_iso_timestamp, log_message = docker_log.decode().strip().split(" ", 1)
-        log_unix_timestamp_in_ms = validate_timestamp(log_iso_timestamp, retention_period)
-        for log_line in textwrap.wrap(log_message, LOG_MESSAGE_MAX_SIZE):
-            log_event = {"message": log_line,
-                         "timestamp": log_unix_timestamp_in_ms}
-
-            log_line_size = len(log_line.encode()) + SIZE_PADDING
-
-            if not (log_fits_batch(batch, log_line_size, batch_size) and \
-                    timestamp_fits_timespan(batch, log_unix_timestamp_in_ms)):
-                yield batch
-                batch = []
-                batch_size = 0
-
-            batch += [log_event]
-            batch_size += log_line_size
-
-    yield batch
+    return log_unix_timestamp
 
 
 def put_log_events(aws_cloudwatch_client, aws_cloudwatch_group, aws_cloudwatch_stream, retention_period, docker_logs):
 
-    for log_events_batch in get_batch_of_log_events(docker_logs, retention_period):
-        if log_events_batch:
+
+    for docker_log in docker_logs:
+        print(docker_log.decode().strip())
+        log_iso_timestamp, log_message = docker_log.decode().strip().split(" ", 1)
+        log_unix_timestamp = validate_timestamp(log_iso_timestamp, datetime.now().timestamp(), retention_period)
+        log_unix_timestamp_in_ms = round(log_unix_timestamp * 1000)
+
+        for log_line in textwrap.wrap(log_message, LOG_MESSAGE_MAX_SIZE):
+            log_event = {"message": log_line,
+                         "timestamp": log_unix_timestamp_in_ms}
+
+            logger.info(f"Saving batch of log events: {log_event}...")
             response = aws_cloudwatch_client.put_log_events(logGroupName=aws_cloudwatch_group,
                                                             logStreamName=aws_cloudwatch_stream,
-                                                            logEvents=log_events_batch)
+                                                            logEvents=[log_event])
 
 
 def set_aws_cloudwatch_stream(aws_cloudwatch_client, aws_cloudwatch_group, aws_cloudwatch_stream):
@@ -188,27 +162,32 @@ def run(aws_access_key_id, aws_secret_access_key,
 
     logger.info(f"Running Docker image '{docker_image}'...")
     container = docker_client.containers.run(docker_image,
-                                             command=bash_command,
-                                             detach=True)
+                                            command=bash_command,
+                                            auto_remove=True,
+                                            detach=True)
 
     logger.info("Saving log events...")
     put_log_events(aws_cloudwatch_client,
-                   aws_cloudwatch_group,
-                   aws_cloudwatch_stream,
-                   retention_period,
-                   container.logs(stream=True,
-                                  stdout=True,
-                                  stderr=True,
-                                  timestamps=True))
+                aws_cloudwatch_group,
+                aws_cloudwatch_stream,
+                retention_period,
+                container.logs(stream=True,
+                               stdout=True,
+                               stderr=True,
+                               timestamps=True))
 
     # logger.info("Reading all log events from stream...")
     # log_events = get_log_events(aws_cloudwatch_client,
     #                             aws_cloudwatch_group,
     #                             aws_cloudwatch_stream)
-    # print(*log_events, sep="\n")
+
+    # print("\n".join([log_event["message"] for log_event in log_events if "message" in log_event]))
 
 if __name__ == '__main__':
     args = parse_args()
+
+    print(args["bash_command"])
+
     set_logger(LOGGER_FORMAT)
     run(**args)
     logger.info("Run is completed.")
