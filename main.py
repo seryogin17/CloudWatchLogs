@@ -185,9 +185,6 @@ def run(aws_access_key_id, aws_secret_access_key,
 
 if __name__ == '__main__':
     args = parse_args()
-
-    print(args["bash_command"])
-
     set_logger(LOGGER_FORMAT)
     run(**args)
     logger.info("Run is completed.")
