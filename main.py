@@ -113,8 +113,8 @@ def get_batch_of_log_events(docker_logs, retention_period):
                 batch = []
                 batch_size = 0
 
-                batch += [log_event]
-                batch_size += log_line_size
+            batch += [log_event]
+            batch_size += log_line_size
 
     yield batch
 
